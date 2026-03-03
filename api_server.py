@@ -1,6 +1,7 @@
 import os
 import logging
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from supabase import create_client, Client
@@ -18,17 +19,20 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    logger.critical("SUPABASE_URL or SUPABASE_KEY is not set in environment.")
-    # In a real prod env, we might exit, but for FastAPI we'll handle it via middleware or dependencies
+    logger.critical("SUPABASE_URL or SUPABASE_KEY is not set.")
     supabase = None
 else:
     try:
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     except Exception as e:
-        logger.error(f"Failed to connect to Supabase: {e}")
+        logger.error(f"Supabase connection failed: {e}")
         supabase = None
 
-app = FastAPI(title="AI Crypto Analysis Platform API")
+app = FastAPI(
+    title="AI Crypto Analysis Platform API",
+    description="Backend service for market screening, AI analysis, and paper trading simulation.",
+    version="1.1.0"
+)
 executor = PaperExecutor()
 backtester = Backtester()
 
@@ -40,13 +44,22 @@ class TradeRequest(BaseModel):
     price: float
     signal_id: Optional[str] = None
 
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/docs")
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "db_connected": supabase is not None}
+    return {
+        "status": "ok",
+        "db_connected": supabase is not None,
+        "mock_mode": os.getenv("MOCK_MODE", "true").lower() == "true"
+    }
 
 @app.get("/api/top-signals")
 async def get_top_signals(limit: int = 10):
     if not supabase: raise HTTPException(status_code=503, detail="Database unavailable")
+    # Fetch top signals with the new normalized fields
     res = supabase.table("signals").select("*").order("score", desc=True).limit(limit).execute()
     return {"data": res.data}
 
@@ -62,7 +75,7 @@ async def simulate_trade(req: TradeRequest):
     if not supabase: raise HTTPException(status_code=503, detail="Database unavailable")
     result = executor.execute_trade(req.user_id, req.symbol, req.side, req.amount, req.price, req.signal_id)
     if not result["success"]:
-        raise HTTPException(status_code=400, detail=result["error"])
+        raise HTTPException(status_code=400, detail=result.get("error", "Unknown error"))
     return result
 
 @app.get("/api/portfolio/{user_id}")
@@ -78,7 +91,7 @@ async def run_backtest(symbol: str = "BTC/USDT", days: int = 90):
         result = backtester.run_backtest(symbol, days=days)
         return {"data": result}
     except Exception as e:
-        logger.error(f"Backtest failed: {e}")
+        logger.error(f"Backtest failed for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
