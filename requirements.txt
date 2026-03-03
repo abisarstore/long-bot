@@ -1,0 +1,7 @@
+supabase
+ccxt
+pandas
+ta
+fastapi
+uvicorn
+python-dotenv

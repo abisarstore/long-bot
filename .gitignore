@@ -1,0 +1,5 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+ai-crypto-platform-v1.0.zip
