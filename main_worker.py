@@ -146,7 +146,8 @@ class MainWorker:
         logger.info("Worker stopped.")
 
 if __name__ == "__main__":
-    worker = MainWorker(mock_mode=True)
+    MOCK_MODE = os.getenv("MOCK_MODE", "true").lower() == "true"
+    worker = MainWorker(mock_mode=MOCK_MODE)
     if os.getenv("RUN_ONCE") == "true":
         worker.run_cycle()
     else:
