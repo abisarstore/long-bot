@@ -17,7 +17,6 @@ logger = logging.getLogger("MainWorker")
 
 CADENCE_MINUTES = int(os.getenv("CADENCE_MINUTES", "5"))
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
-SIGNAL_BUCKET_MINUTES = int(os.getenv("SIGNAL_BUCKET_MINUTES", "15"))
 
 class MainWorker:
     def __init__(self, mock_mode=True):
@@ -36,12 +35,10 @@ class MainWorker:
         self.engine = DecisionEngine()
         self.orchestrator = ModelOrchestrator(mock_mode=mock_mode)
 
-    def _is_duplicate_signal(self, symbol):
-        if not self.supabase: return False
-        # Check if a signal for this symbol exists in the last bucket
-        bucket_start = datetime.now(timezone.utc) - timedelta(minutes=SIGNAL_BUCKET_MINUTES)
-        res = self.supabase.table("signals").select("id").eq("symbol", symbol).gt("timestamp", bucket_start.isoformat()).execute()
-        return len(res.data) > 0
+    def _get_bucket_15m(self, dt: datetime):
+        # Floor to nearest 15 minutes
+        discard = timedelta(minutes=dt.minute % 15, seconds=dt.second, microseconds=dt.microsecond)
+        return dt - discard
 
     def run_cycle(self):
         if not self.supabase:
@@ -84,10 +81,8 @@ class MainWorker:
             for item in top_candidates:
                 if self.stop: break
                 symbol = item["symbol"]
-
-                if self._is_duplicate_signal(symbol):
-                    logger.info(f"Skipping duplicate: {symbol}")
-                    continue
+                now = datetime.now(timezone.utc)
+                bucket = self._get_bucket_15m(now)
 
                 logger.info(f"Deep Analysis: {symbol}")
                 deep_res = self.orchestrator.call_deep_analysis(symbol, {}, {}, {})
@@ -98,7 +93,8 @@ class MainWorker:
 
                     signal_body = {
                         "symbol": symbol,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": now.isoformat(),
+                        "bucket_15m": bucket.isoformat(),
                         "score": final["score"],
                         "rating": final["rating"],
                         "confidence": deep_res["results"].get("confidence"),
@@ -115,7 +111,13 @@ class MainWorker:
                     if DRY_RUN:
                         logger.info(f"[DRY RUN] Signal for {symbol}: {final['score']}")
                     else:
-                        self.supabase.table("signals").insert(signal_body).execute()
+                        try:
+                            self.supabase.table("signals").insert(signal_body).execute()
+                        except Exception as e:
+                            if "duplicate key value" in str(e):
+                                logger.info(f"Skipping duplicate bucket for {symbol}")
+                            else:
+                                logger.error(f"Failed to insert signal: {e}")
 
         logger.info("--- Cycle Completed ---")
 
@@ -145,7 +147,6 @@ class MainWorker:
 
 if __name__ == "__main__":
     worker = MainWorker(mock_mode=True)
-    # Run once if explicitly requested or start daemon
     if os.getenv("RUN_ONCE") == "true":
         worker.run_cycle()
     else:
